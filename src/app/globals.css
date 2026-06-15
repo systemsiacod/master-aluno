@@ -1,26 +1,122 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ──────────────── Light (padrão) ──────────────── */
+:root,
+[data-theme="light"] {
+  --bg:           #f9fafb;
+  --surface:      #ffffff;
+  --surface-2:    #f3f4f6;
+  --text:         #111827;
+  --text-2:       #374151;
+  --text-muted:   #6b7280;
+  --border:       #e5e7eb;
+  --border-input: #d1d5db;
+  --input-bg:     #ffffff;
+  --placeholder:  #9ca3af;
+
+  --sidebar-bg:         #0f4a40;
+  --sidebar-text:       #ffffff;
+  --sidebar-muted:      rgba(255,255,255,0.55);
+  --sidebar-active-bg:  rgba(255,255,255,0.18);
+  --sidebar-hover-bg:   rgba(255,255,255,0.1);
+  --sidebar-divider:    rgba(255,255,255,0.1);
+
+  --accent:       #0f4a40;
+  --accent-hover: #1a6b5e;
+  --accent-fg:    #ffffff;
+
+  --badge-blue-bg:    #dbeafe;  --badge-blue-fg:    #1e40af;
+  --badge-red-bg:     #fee2e2;  --badge-red-fg:     #991b1b;
+  --badge-amber-bg:   #fef3c7;  --badge-amber-fg:   #92400e;
+  --badge-green-bg:   #dcfce7;  --badge-green-fg:   #166534;
+  --badge-orange-bg:  #ffedd5;  --badge-orange-fg:  #9a3412;
+}
+
+/* ──────────────── Dark ──────────────── */
+[data-theme="dark"] {
+  --bg:           #0f172a;
+  --surface:      #1e293b;
+  --surface-2:    #334155;
+  --text:         #f1f5f9;
+  --text-2:       #cbd5e1;
+  --text-muted:   #94a3b8;
+  --border:       #334155;
+  --border-input: #475569;
+  --input-bg:     #0f172a;
+  --placeholder:  #64748b;
+
+  --sidebar-bg:         #020617;
+  --sidebar-text:       #f1f5f9;
+  --sidebar-muted:      rgba(148,163,184,0.85);
+  --sidebar-active-bg:  rgba(255,255,255,0.14);
+  --sidebar-hover-bg:   rgba(255,255,255,0.07);
+  --sidebar-divider:    rgba(255,255,255,0.07);
+
+  --accent:       #34d399;
+  --accent-hover: #10b981;
+  --accent-fg:    #0f172a;
+
+  --badge-blue-bg:    #0c1a3f;  --badge-blue-fg:    #93c5fd;
+  --badge-red-bg:     #450a0a;  --badge-red-fg:     #fca5a5;
+  --badge-amber-bg:   #422006;  --badge-amber-fg:   #fde047;
+  --badge-green-bg:   #064e3b;  --badge-green-fg:   #6ee7b7;
+  --badge-orange-bg:  #431407;  --badge-orange-fg:  #fdba74;
+}
+
+/* ──────────────── Deep Blue ──────────────── */
+[data-theme="deep-blue"] {
+  --bg:           #050c18;
+  --surface:      #0a1628;
+  --surface-2:    #0f2040;
+  --text:         #e2e8f0;
+  --text-2:       #94a3b8;
+  --text-muted:   #64748b;
+  --border:       #1e3a5f;
+  --border-input: #2a4f82;
+  --input-bg:     #0a1628;
+  --placeholder:  #4a6b8a;
+
+  --sidebar-bg:         #030810;
+  --sidebar-text:       #e2e8f0;
+  --sidebar-muted:      rgba(100,116,139,0.9);
+  --sidebar-active-bg:  rgba(59,130,246,0.22);
+  --sidebar-hover-bg:   rgba(59,130,246,0.1);
+  --sidebar-divider:    rgba(30,58,95,0.7);
+
+  --accent:       #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-fg:    #ffffff;
+
+  --badge-blue-bg:    #0c2461;  --badge-blue-fg:    #60a5fa;
+  --badge-red-bg:     #2d0909;  --badge-red-fg:     #f87171;
+  --badge-amber-bg:   #2d1e04;  --badge-amber-fg:   #facc15;
+  --badge-green-bg:   #0a2e1a;  --badge-green-fg:   #4ade80;
+  --badge-orange-bg:  #2d1404;  --badge-orange-fg:  #fb923c;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: Arial, Helvetica, sans-serif;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Inputs herdam sempre as cores do tema */
+input, select, textarea {
+  background-color: var(--input-bg);
+  color: var(--text);
+  border-color: var(--border-input);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--placeholder);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
 }
