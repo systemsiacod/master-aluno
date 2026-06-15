@@ -9,6 +9,7 @@ export default function StudentsPage() {
   const [selectedStudent, setSelectedStudent] = useState<string | null>(null)
   const [showGuardianForm, setShowGuardianForm] = useState(false)
   const [scraping, setScraping] = useState<string | null>(null)
+  const [scrapeResult, setScrapeResult] = useState<{ studentId: string; message: string; success: boolean } | null>(null)
 
   useEffect(() => { fetchStudents() }, [])
 
@@ -62,13 +63,30 @@ export default function StudentsPage() {
 
   async function handleScrape(studentId: string) {
     setScraping(studentId)
-    await fetch('/api/scraper', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-cron-secret': 'master-aluno-cron-secret-2024' },
-      body: JSON.stringify({ studentId }),
-    })
-    setScraping(null)
-    fetchStudents()
+    setScrapeResult(null)
+    try {
+      const res = await fetch('/api/scraper', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-cron-secret': 'master-aluno-cron-secret-2024' },
+        body: JSON.stringify({ studentId }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setScrapeResult({ studentId, success: false, message: data.error || `Erro ${res.status}` })
+      } else {
+        const r = data.results?.[0]
+        if (r?.success) {
+          setScrapeResult({ studentId, success: true, message: `✅ ${r.newSchedules} agendamentos, ${r.newRecados} recados, ${r.changedGrades} notas` })
+        } else {
+          setScrapeResult({ studentId, success: false, message: r?.error || 'Scraper retornou erro desconhecido' })
+        }
+      }
+    } catch (err) {
+      setScrapeResult({ studentId, success: false, message: `Erro de rede: ${String(err)}` })
+    } finally {
+      setScraping(null)
+      fetchStudents()
+    }
   }
 
   if (loading) return (
@@ -203,6 +221,19 @@ export default function StudentsPage() {
                   </button>
                 </div>
               </div>
+
+              {/* Resultado do scrape */}
+              {scrapeResult?.studentId === student.id && (
+                <div
+                  className="text-xs px-3 py-2 rounded-lg mb-2"
+                  style={{
+                    backgroundColor: scrapeResult.success ? 'var(--badge-blue-bg)' : 'var(--badge-red-bg)',
+                    color: scrapeResult.success ? 'var(--badge-blue-fg)' : 'var(--badge-red-fg)',
+                  }}
+                >
+                  {scrapeResult.message}
+                </div>
+              )}
 
               {/* Responsáveis */}
               {student.ma_guardians && student.ma_guardians.length > 0 && (

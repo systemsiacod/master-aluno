@@ -13,8 +13,8 @@ export async function POST(req: NextRequest) {
   }
 
   const db = createServerClient()
-  const query = db.from('ma_students').select('*').eq('active', true)
-  if (studentId) query.eq('id', studentId)
+  let query = db.from('ma_students').select('*').eq('active', true)
+  if (studentId) query = query.eq('id', studentId)
 
   const { data: students, error } = await query
   if (error || !students?.length) {
