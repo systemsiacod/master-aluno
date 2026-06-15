@@ -35,16 +35,17 @@ export async function POST(req: NextRequest) {
           .select('id').eq('student_id', student.id).eq('external_key', s.external_key).single()
 
         if (!existing) {
-          const { data: inserted } = await db.from('ma_schedules').insert({
+          const { data: inserted, error: insertErr } = await db.from('ma_schedules').insert({
             ...s, student_id: student.id,
           }).select().single()
-          if (inserted) newSchedules.push(inserted)
+          if (insertErr) console.error(`[Scraper] ❌ Erro ao inserir agendamento "${s.title}":`, insertErr.message)
+          else if (inserted) newSchedules.push(inserted)
         } else {
-          // Atualiza status completed se mudou
-          await db.from('ma_schedules').update({ completed: s.completed })
+          await db.from('ma_schedules').update({ completed: s.completed, description: s.description })
             .eq('student_id', student.id).eq('external_key', s.external_key)
         }
       }
+      console.log(`[Scraper] 📅 Agendamentos: ${scraped.schedules.length} lidos, ${newSchedules.length} novos inseridos`)
       if (newSchedules.length > 0) await processNewSchedules(student.id, newSchedules)
 
       // --- RECADOS ---
@@ -54,12 +55,14 @@ export async function POST(req: NextRequest) {
         const { data: existing } = await db.from('ma_recados')
           .select('id').eq('student_id', student.id).eq('external_key', r.external_key).single()
         if (!existing) {
-          const { data: inserted } = await db.from('ma_recados').insert({
+          const { data: inserted, error: insertErr } = await db.from('ma_recados').insert({
             ...r, student_id: student.id,
           }).select().single()
-          if (inserted) newRecados.push(inserted)
+          if (insertErr) console.error(`[Scraper] ❌ Erro ao inserir recado:`, insertErr.message)
+          else if (inserted) newRecados.push(inserted)
         }
       }
+      console.log(`[Scraper] 📢 Recados: ${scraped.recados.length} lidos, ${newRecados.length} novos`)
       if (newRecados.length > 0) await processNewRecados(student.id, newRecados)
 
       // --- NOTAS ---

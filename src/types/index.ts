@@ -34,8 +34,10 @@ export interface Schedule {
   date: string
   type: 'AVALIAÇÃO' | 'TRABALHO' | 'ATIVIDADE'
   title: string
+  description: string | null
   discipline: string
   completed: boolean
+  completed_at: string | null
   first_seen_at: string
   created_at: string
 }

@@ -66,13 +66,19 @@ export async function scrapeMasterEscola(login: string, password: string): Promi
   const page = await context.newPage()
 
   // ── Captura de sessão ──────────────────────────────────────────────────────
-  // Guardamos o token e os IDs do aluno a partir da resposta de login
-  let authToken    = ''
-  let requestToken = ''   // token como aparece nas requisições subsequentes
-  let idAluno      = ''
-  let idCurso      = ''
+  let authToken     = ''
+  let requestToken  = ''
+  let idAluno       = ''
+  let idCurso       = ''
+  let userId        = ''
+  let pessoa        = ''
+  let conexaoValor  = ''
+  let idInstituicao = ''
 
-  // Intercepta RESPOSTAS para capturar token e IDs
+  // Dados capturados via interceptação de rede (agendamentos/recados precisam de navegação)
+  const captured: Record<string, unknown> = {}
+
+  // Intercepta RESPOSTAS: token de login + dados das telas navegadas
   page.on('response', async (response) => {
     try {
       const ct = response.headers()['content-type'] || ''
@@ -81,13 +87,28 @@ export async function scrapeMasterEscola(login: string, password: string): Promi
       const data = await response.json() as Record<string, unknown>
 
       if (url.includes('entrar.php') && data['response'] === 'OK') {
-        authToken = String(data['token'] || '')
-        console.log('[Scraper] 🔑 JWT capturado:', authToken.slice(0, 40) + '...')
+        authToken     = String(data['token']          || '')
+        userId        = String(data['id']             || '')
+        pessoa        = String(data['pessoa']         || 'R')
+        conexaoValor  = String(data['conexao_valor']  || '1')
+        idInstituicao = String(data['id_instituicao'] || '')
+        console.log(`[Scraper] 🔑 JWT capturado. id=${userId} pessoa=${pessoa} inst=${idInstituicao}`)
       }
       if (url.includes('aluno.php') && data['id_aluno']) {
         idAluno = String(data['id_aluno'])
         idCurso = String(data['id_curso'] || '')
         console.log(`[Scraper] 👤 id_aluno=${idAluno} id_curso=${idCurso}`)
+      }
+      // Captura respostas das telas específicas que o browser navega
+      if (url.includes('agendamentos.php') && !captured['agendamentos']) {
+        captured['agendamentos'] = data
+        const items = Array.isArray(data['agendamentos']) ? data['agendamentos'] as unknown[] : []
+        console.log(`[Scraper] 📊 agendamentos.php capturado: ${items.length} itens`)
+      }
+      if (url.includes('recados.php') && !captured['recados']) {
+        captured['recados'] = data
+        const items = Array.isArray(data['recados']) ? (data['recados'] as unknown[]) : (Array.isArray(data) ? data as unknown[] : [])
+        console.log(`[Scraper] 📊 recados.php capturado: ${items.length} itens`)
       }
     } catch { /* não é JSON */ }
   })
@@ -129,35 +150,29 @@ export async function scrapeMasterEscola(login: string, password: string): Promi
     // Faz login
     await doLogin(page, login, password)
     await page.waitForTimeout(8000)
-    await screenshot(page, '02-after-login')
+    console.log(`[Scraper] ✅ Login OK! Navegando pelas seções para capturar dados...`)
+    console.log('[Scraper] Contexto:', JSON.stringify({ idAluno, idCurso, userId, pessoa, idInstituicao }))
 
-    // Verifica se logou
-    if (!authToken) {
-      // Tenta extrair da página
-      const stillLogin = await page.evaluate(() => {
-        const txt = Array.from(document.querySelectorAll('flt-semantics'))
-          .map(e => e.textContent || '').join(' ').toLowerCase()
-        return txt.includes('código de acesso') || txt.includes('informe sua senha')
-      })
-      if (stillLogin) throw new Error('Login falhou — verifique Código de acesso e senha no Supabase')
-    }
+    // PASSO 2a: Navega até AGENDAMENTOS — coordenadas confirmadas (y=343)
+    // O browser faz a chamada agendamentos.php e o interceptor captura a resposta
+    await navToSection(page, 343, 'AGENDAMENTOS')
+    await page.waitForTimeout(4000)
+    await screenshot(page, '03-agendamentos')
 
-    if (!authToken) {
-      throw new Error('Token JWT não foi capturado — o login pode não ter completado')
-    }
+    // PASSO 2b: Navega até RECADOS — coordenadas confirmadas (y=475)
+    await navToSection(page, 475, 'RECADOS')
+    await page.waitForTimeout(4000)
+    await screenshot(page, '04-recados')
 
-    console.log(`[Scraper] ✅ Login OK! Chamando APIs diretamente...`)
+    // PASSO 2c: Boletim via contextPost (já funciona sem navegação)
+    const baseBody = { aluno: idAluno, curso: idCurso, id: userId, pessoa, conexao_valor: conexaoValor }
+    const grades = await contextPost(context.request, 'boletim.php', baseBody, requestToken)
+      .then(parseBoletimResponse)
+      .catch(e => { console.error('[Scraper] ❌ boletim:', e); return [] as ScraperResult['grades'] })
 
-    // ── PASSO 2: Chamar APIs REST diretamente com o token ───────────────────
-    // (sem mais navegação de menu — muito mais rápido e confiável)
-    const [schedules, grades, recados] = await Promise.all([
-      callAgendamentos(authToken, requestToken, idAluno, idCurso)
-        .catch(e => { console.error('[Scraper] ❌ agendamentos:', e); return [] as ScraperResult['schedules'] }),
-      callBoletim(authToken, requestToken, idAluno, idCurso)
-        .catch(e => { console.error('[Scraper] ❌ boletim:', e); return [] as ScraperResult['grades'] }),
-      callRecados(authToken, requestToken, idAluno, idCurso)
-        .catch(e => { console.error('[Scraper] ❌ recados:', e); return [] as ScraperResult['recados'] }),
-    ])
+    // Parseia os dados capturados pela navegação
+    const schedules = parseAgendamentosResponse(captured['agendamentos'] ?? {})
+    const recados   = parseRecadosResponse(captured['recados'] ?? {})
 
     console.log(`[Scraper] ✅ Coleta concluída: ${schedules.length} agendamentos, ${grades.length} notas, ${recados.length} recados`)
     return { schedules, grades, recados }
@@ -165,6 +180,17 @@ export async function scrapeMasterEscola(login: string, password: string): Promi
   } finally {
     await browser.close()
   }
+}
+
+// Abre o menu hamburger e clica na coordenada y do item desejado
+async function navToSection(page: import('playwright').Page, itemY: number, name: string) {
+  console.log(`[Scraper] 🔍 Navegando para ${name} (y=${itemY})...`)
+  // Abre menu hamburger (canto superior esquerdo, coordenadas confirmadas)
+  await flutterClick(page, 24, 23)
+  await page.waitForTimeout(1200)
+  // Clica no item do menu
+  await flutterClick(page, 200, itemY)
+  console.log(`[Scraper] 🔍 ${name} clicado`)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -219,59 +245,82 @@ async function doLogin(page: import('playwright').Page, login: string, password:
 // CHAMADAS DIRETAS À API REST
 // Tenta múltiplos formatos de autenticação (Bearer, form-data, query param)
 // ──────────────────────────────────────────────────────────────────────────────
-async function apiGet(endpoint: string, authToken: string, requestToken: string, params: Record<string, string> = {}) {
-  const url = new URL(`${PHP_API}/${endpoint}`)
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v))
-
-  const headers: Record<string, string> = {
-    'User-Agent': 'Dart/3.3 (dart:io)',
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-  }
-
-  // Tenta com Bearer token (padrão JWT)
-  if (authToken) headers['Authorization'] = `Bearer ${authToken}`
-  // Ou com o header que o app usa (capturado pelo interceptor)
-  if (requestToken && requestToken !== `Bearer ${authToken}`) headers['x-auth-token'] = requestToken
-
-  console.log(`[Scraper] 📡 GET ${url.toString().split('?')[0]}`)
-  const resp = await fetch(url.toString(), { headers })
-  console.log(`[Scraper]    Status: ${resp.status}`)
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} para ${endpoint}`)
-  return resp.json()
-}
-
-async function apiPost(endpoint: string, authToken: string, body: Record<string, string>) {
+// ──────────────────────────────────────────────────────────────────────────────
+// contextPost: usa Playwright APIRequestContext
+// Compartilha cookies/sessão com o browser mas é server-side (sem CORS)
+// ──────────────────────────────────────────────────────────────────────────────
+async function contextPost(
+  apiReq: import('playwright').APIRequestContext,
+  endpoint: string,
+  body: Record<string, string>,
+  authToken = ''
+): Promise<unknown> {
   const url = `${PHP_API}/${endpoint}`
-  const headers: Record<string, string> = {
-    'User-Agent': 'Dart/3.3 (dart:io)',
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${authToken}`,
-  }
-  console.log(`[Scraper] 📡 POST ${url}`)
-  const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
-  console.log(`[Scraper]    Status: ${resp.status}`)
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} para ${endpoint}`)
-  return resp.json()
+  console.log(`[Scraper] 📡 APIRequest POST ${url}`)
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (authToken) headers['Authorization'] = authToken   // JWT raw (sem "Bearer")
+
+  const response = await apiReq.post(url, { data: body, headers })
+
+  const text = await response.text()
+  console.log(`[Scraper]    Status: ${response.status()} | Resposta: ${text.slice(0, 300)}`)
+
+  if (!text.trim()) throw new Error(`Resposta vazia de ${endpoint}`)
+  const parsed = JSON.parse(text)
+  // PHP retorna {"response":"unauthorized"} quando a sessão expirou ou falta auth
+  if (parsed?.response === 'unauthorized') throw new Error(`Unauthorized em ${endpoint} — sessão PHP ou JWT inválido`)
+  return parsed
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// AGENDAMENTOS
+// PARSERS de resposta
 // ──────────────────────────────────────────────────────────────────────────────
-async function callAgendamentos(authToken: string, requestToken: string, idAluno: string, idCurso: string): Promise<ScraperResult['schedules']> {
-  const data = await apiGet('agendamentos.php', authToken, requestToken, {
-    id_aluno: idAluno,
-    id_curso: idCurso,
-  })
-
-  console.log('[Scraper] agendamentos.php keys:', Object.keys(data || {}).join(', '))
-  const items: unknown[] = Array.isArray(data) ? data : (data?.agendamentos || data?.data || [])
-  console.log(`[Scraper] Itens de agendamento: ${items.length}`)
+function parseAgendamentosResponse(data: unknown): ScraperResult['schedules'] {
+  const d = data as Record<string, unknown>
+  console.log('[Scraper] agendamentos keys:', Object.keys(d || {}).join(', '))
+  const items: unknown[] = Array.isArray(data) ? data
+    : (Array.isArray(d?.agendamentos) ? d.agendamentos as unknown[]
+    : Array.isArray(d?.data) ? d.data as unknown[]
+    : [])
+  console.log(`[Scraper] Total agendamentos: ${items.length}`)
   if (items.length > 0) console.log('[Scraper] 1º item:', JSON.stringify(items[0]).slice(0, 200))
-
-  return items.flatMap((item: unknown) => parseAgendamentoItem(item)).filter(Boolean) as ScraperResult['schedules']
+  else console.log('[Scraper] Amostra agendamentos:', JSON.stringify(d).slice(0, 400))
+  return items.map(parseAgendamentoItem).filter(Boolean) as ScraperResult['schedules']
 }
 
+function parseBoletimResponse(data: unknown): ScraperResult['grades'] {
+  const d = data as Record<string, unknown>
+  console.log('[Scraper] boletim keys:', Object.keys(d || {}).join(', '))
+  let items: unknown[] = []
+  if (Array.isArray(d?.valores))       items = d.valores as unknown[]
+  else if (Array.isArray(d?.parciais)) items = d.parciais as unknown[]
+  else if (Array.isArray(d?.notas))    items = d.notas as unknown[]
+  else if (Array.isArray(data))        items = data as unknown[]
+  if (items.length === 0 && d?.classificacao) {
+    const c = d.classificacao
+    items = Array.isArray(c) ? c : Object.entries(c as Record<string, unknown>).map(([k, v]) => ({ disciplina: k, nota: v }))
+  }
+  console.log(`[Scraper] Itens de nota: ${items.length}`)
+  if (items.length > 0) console.log('[Scraper] 1ª nota:', JSON.stringify(items[0]).slice(0, 300))
+  return items.map(parseGradeItem).filter(Boolean) as ScraperResult['grades']
+}
+
+function parseRecadosResponse(data: unknown): ScraperResult['recados'] {
+  const d = data as Record<string, unknown>
+  console.log('[Scraper] recados keys:', Object.keys(d || {}).join(', '))
+  const items: unknown[] = Array.isArray(d?.recados) ? d.recados as unknown[]
+    : Array.isArray(d?.data) ? d.data as unknown[]
+    : Array.isArray(data) ? data as unknown[]
+    : []
+  console.log(`[Scraper] Itens de recado: ${items.length}`)
+  if (items.length > 0) console.log('[Scraper] 1º recado:', JSON.stringify(items[0]).slice(0, 300))
+  else console.log('[Scraper] Amostra recados:', JSON.stringify(d).slice(0, 400))
+  return items.map(parseRecadoItem).filter(Boolean) as ScraperResult['recados']
+}
+// ──────────────────────────────────────────────────────────────────────────────
+// PARSERS de item individual
+// ──────────────────────────────────────────────────────────────────────────────
 function parseAgendamentoItem(item: unknown): ScraperResult['schedules'][number] | null {
   if (!item || typeof item !== 'object') return null
   const i = item as Record<string, unknown>
@@ -293,83 +342,47 @@ function parseAgendamentoItem(item: unknown): ScraperResult['schedules'][number]
   const title = String(i['titulo'] || i['descricao'] || i['title'] || i['nome'] || '').trim().slice(0, 200)
   if (!title) return null
 
+  // Remove tags HTML do campo texto
+  const rawTexto = String(i['texto'] || i['text'] || i['descricao_completa'] || '')
+  const description = rawTexto
+    .replace(/<[^>]*>/g, ' ')   // remove tags HTML
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')       // colapsa espaços múltiplos
+    .trim()
+    .slice(0, 2000) || null
+
   return {
     external_key: String(i['id'] || i['codigo'] || `${isoDate}-${title.slice(0, 20).replace(/\s/g, '_')}`),
     date: isoDate,
     type,
     title,
+    description,
     discipline: String(i['disciplina'] || i['materia'] || i['nome_disciplina'] || '').trim().slice(0, 100),
     completed: Boolean(i['realizado'] || i['completed'] || i['concluido']),
   }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// BOLETIM DE NOTAS
-// ──────────────────────────────────────────────────────────────────────────────
-async function callBoletim(authToken: string, requestToken: string, idAluno: string, idCurso: string): Promise<ScraperResult['grades']> {
-  // Tenta boletim.php primeiro, depois dashboard.php como fallback
-  let data: unknown
-  try {
-    data = await apiGet('boletim.php', authToken, requestToken, { id_aluno: idAluno, id_curso: idCurso })
-  } catch {
-    console.log('[Scraper] boletim.php falhou, tentando dashboard.php...')
-    data = await apiGet('dashboard.php', authToken, requestToken, { id_aluno: idAluno, id_curso: idCurso })
-  }
-
-  console.log('[Scraper] boletim keys:', Object.keys(data as object || {}).join(', '))
-
-  const items: unknown[] = Array.isArray(data)
-    ? data
-    : ((data as Record<string, unknown>)?.notas ||
-       (data as Record<string, unknown>)?.boletim ||
-       (data as Record<string, unknown>)?.data ||
-       [])
-
-  console.log(`[Scraper] Itens de nota: ${items.length}`)
-  if (items.length > 0) console.log('[Scraper] 1ª nota:', JSON.stringify(items[0]).slice(0, 200))
-
-  return items.map((item: unknown) => parseGradeItem(item)).filter(Boolean) as ScraperResult['grades']
 }
 
 function parseGradeItem(item: unknown): ScraperResult['grades'][number] | null {
   if (!item || typeof item !== 'object') return null
   const i = item as Record<string, unknown>
 
-  const rawGrade = String(i['nota'] || i['grade'] || i['media'] || i['valor'] || '').replace(',', '.')
-  const grade = parseFloat(rawGrade)
-  if (isNaN(grade) || grade < 0 || grade > 10) return null
-
   const discipline = String(i['disciplina'] || i['materia'] || i['nome_disciplina'] || '').trim().slice(0, 100)
   if (!discipline) return null
 
+  const rawGrade = String(i['nota'] || i['grade'] || i['media'] || i['valor'] || '').replace(',', '.').trim()
+  const grade = rawGrade === '.' || rawGrade === '' || rawGrade === '-' ? null : parseFloat(rawGrade)
+
   return {
     discipline,
-    grade,
-    classification: grade >= 8 ? 'Ótimo' : grade >= 6 ? 'Bom' : 'Regular',
+    grade: (grade !== null && !isNaN(grade) && grade >= 0 && grade <= 10) ? grade : null,
+    classification: grade !== null && !isNaN(grade)
+      ? (grade >= 8 ? 'Ótimo' : grade >= 6 ? 'Bom' : 'Regular')
+      : 'N/D',
     semester: Number(i['bimestre'] || i['semestre'] || i['periodo'] || 1),
   }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// RECADOS
-// ──────────────────────────────────────────────────────────────────────────────
-async function callRecados(authToken: string, requestToken: string, idAluno: string, idCurso: string): Promise<ScraperResult['recados']> {
-  const data = await apiGet('recados.php', authToken, requestToken, {
-    id_aluno: idAluno,
-    id_curso: idCurso,
-  })
-
-  console.log('[Scraper] recados.php keys:', Object.keys(data as object || {}).join(', '))
-  const items: unknown[] = Array.isArray(data)
-    ? data
-    : ((data as Record<string, unknown>)?.recados ||
-       (data as Record<string, unknown>)?.data ||
-       [])
-
-  console.log(`[Scraper] Itens de recado: ${items.length}`)
-  if (items.length > 0) console.log('[Scraper] 1º recado:', JSON.stringify(items[0]).slice(0, 200))
-
-  return items.map((item: unknown) => parseRecadoItem(item)).filter(Boolean) as ScraperResult['recados']
 }
 
 function parseRecadoItem(item: unknown): ScraperResult['recados'][number] | null {

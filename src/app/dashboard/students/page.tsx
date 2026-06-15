@@ -63,7 +63,8 @@ export default function StudentsPage() {
 
   async function handleScrape(studentId: string) {
     setScraping(studentId)
-    setScrapeResult(null)
+    // Mostra estado de carregamento mantendo o frame visível
+    setScrapeResult({ studentId, success: true, message: '🔄 Sincronizando... aguarde ~20s' })
     try {
       const res = await fetch('/api/scraper', {
         method: 'POST',
