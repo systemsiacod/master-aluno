@@ -8,6 +8,7 @@ export default function StudentsPage() {
   const [showForm, setShowForm] = useState(false)
   const [selectedStudent, setSelectedStudent] = useState<string | null>(null)
   const [showGuardianForm, setShowGuardianForm] = useState(false)
+  const [editStudent, setEditStudent] = useState<Student | null>(null)
   const [scraping, setScraping] = useState<string | null>(null)
   const [scrapeResult, setScrapeResult] = useState<{ studentId: string; message: string; success: boolean } | null>(null)
 
@@ -37,6 +38,26 @@ export default function StudentsPage() {
       }),
     })
     setShowForm(false)
+    fetchStudents()
+  }
+
+  async function handleEditStudent(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    if (!editStudent) return
+    const fd = new FormData(e.currentTarget)
+    await fetch(`/api/students/${editStudent.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: fd.get('name'),
+        login: fd.get('login'),
+        password: fd.get('password'), // vazio = mantém a senha atual
+        whatsapp: fd.get('whatsapp'),
+        school: fd.get('school'),
+        grade: fd.get('grade'),
+      }),
+    })
+    setEditStudent(null)
     fetchStudents()
   }
 
@@ -125,6 +146,21 @@ export default function StudentsPage() {
         </Modal>
       )}
 
+      {/* Modal: Editar aluno */}
+      {editStudent && (
+        <Modal title="Editar Aluno" onClose={() => setEditStudent(null)}>
+          <form onSubmit={handleEditStudent} className="space-y-3">
+            <FieldPrefilled name="name" label="Nome completo" defaultValue={editStudent.name} required />
+            <FieldPrefilled name="login" label="Matrícula Master Escola" defaultValue={editStudent.master_escola_login} required />
+            <Field name="password" label="Nova senha (deixe vazio para manter)" type="password" />
+            <FieldPrefilled name="whatsapp" label="WhatsApp (ex: 5548999999999)" defaultValue={editStudent.whatsapp} required />
+            <FieldPrefilled name="school" label="Escola" defaultValue={editStudent.school || ''} />
+            <FieldPrefilled name="grade" label="Turma / Série" defaultValue={editStudent.grade || ''} />
+            <ModalActions onCancel={() => setEditStudent(null)} />
+          </form>
+        </Modal>
+      )}
+
       {/* Modal: Adicionar responsável */}
       {showGuardianForm && selectedStudent && (
         <Modal title="Cadastrar Responsável" onClose={() => setShowGuardianForm(false)}>
@@ -202,6 +238,19 @@ export default function StudentsPage() {
                 </div>
                 <div className="flex gap-2 flex-shrink-0">
                   <button
+                    onClick={() => setEditStudent(student)}
+                    className="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                    style={{
+                      backgroundColor: 'var(--surface-2)',
+                      color: 'var(--text-2)',
+                      borderColor: 'var(--border)',
+                      cursor: 'pointer',
+                    }}
+                    title="Editar aluno"
+                  >
+                    ✏️ Editar
+                  </button>
+                  <button
                     onClick={() => handleScrape(student.id)}
                     disabled={scraping === student.id}
                     className="text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50"
@@ -209,6 +258,7 @@ export default function StudentsPage() {
                       backgroundColor: 'var(--badge-blue-bg)',
                       color: 'var(--badge-blue-fg)',
                       borderColor: 'var(--badge-blue-bg)',
+                      cursor: scraping === student.id ? 'wait' : 'pointer',
                     }}
                   >
                     {scraping === student.id ? '⏳ Coletando...' : '🔄 Sincronizar'}
@@ -216,7 +266,7 @@ export default function StudentsPage() {
                   <button
                     onClick={() => { setSelectedStudent(student.id); setShowGuardianForm(true) }}
                     className="text-xs px-3 py-1.5 rounded-lg transition-colors"
-                    style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)' }}
+                    style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-fg)', cursor: 'pointer' }}
                   >
                     + Responsável
                   </button>
@@ -304,6 +354,26 @@ function Field({ name, label, type = 'text', required = false }: { name: string;
         name={name}
         type={type}
         required={required}
+        className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2"
+        style={{
+          backgroundColor: 'var(--input-bg)',
+          color: 'var(--text)',
+          border: '1px solid var(--border-input)',
+        }}
+      />
+    </div>
+  )
+}
+
+function FieldPrefilled({ name, label, type = 'text', defaultValue, required = false }: { name: string; label: string; type?: string; defaultValue: string; required?: boolean }) {
+  return (
+    <div>
+      <label className="text-xs font-medium block mb-1" style={{ color: 'var(--text-2)' }}>{label}</label>
+      <input
+        name={name}
+        type={type}
+        required={required}
+        defaultValue={defaultValue}
         className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2"
         style={{
           backgroundColor: 'var(--input-bg)',

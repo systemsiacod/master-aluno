@@ -105,10 +105,21 @@ export async function scrapeMasterEscola(login: string, password: string): Promi
         const items = Array.isArray(data['agendamentos']) ? data['agendamentos'] as unknown[] : []
         console.log(`[Scraper] 📊 agendamentos.php capturado: ${items.length} itens`)
       }
+      // Lista de recados (primeira chamada)
       if (url.includes('recados.php') && !captured['recados']) {
         captured['recados'] = data
         const items = Array.isArray(data['recados']) ? (data['recados'] as unknown[]) : (Array.isArray(data) ? data as unknown[] : [])
-        console.log(`[Scraper] 📊 recados.php capturado: ${items.length} itens`)
+        console.log(`[Scraper] 📊 recados.php (lista) capturado: ${items.length} itens`)
+      }
+      // Detalhe de recado individual (recado.php ou chamadas recados.php subsequentes)
+      const isRecadoDetail = /\/recado\.php/.test(url) ||
+        (url.includes('recados.php') && captured['recados'] !== undefined)
+      if (isRecadoDetail && !url.includes('agendamentos')) {
+        const detailIdx = Object.keys(captured).filter(k => k.startsWith('recado_detail_')).length
+        captured[`recado_detail_${detailIdx}`] = data
+        const d = data as Record<string, unknown>
+        const att = String(d['anexo'] || d['url_anexo'] || d['link_anexo'] || '')
+        console.log(`[Scraper] 📨 Recado detalhe ${detailIdx + 1} capturado${att ? ' (anexo: ' + att.slice(0, 80) + ')' : ''}`)
       }
     } catch { /* não é JSON */ }
   })
@@ -153,24 +164,26 @@ export async function scrapeMasterEscola(login: string, password: string): Promi
     console.log(`[Scraper] ✅ Login OK! Navegando pelas seções para capturar dados...`)
     console.log('[Scraper] Contexto:', JSON.stringify({ idAluno, idCurso, userId, pessoa, idInstituicao }))
 
-    // PASSO 2a: Navega até AGENDAMENTOS — coordenadas confirmadas (y=343)
-    // O browser faz a chamada agendamentos.php e o interceptor captura a resposta
-    await navToSection(page, 343, 'AGENDAMENTOS')
-    await page.waitForTimeout(4000)
+    // PASSO 2a: Navega até AGENDAMENTOS — y=343 confirmado
+    await navToSection(page, 343, 'AGENDAMENTOS', false)
+    await page.waitForTimeout(5000)
     await screenshot(page, '03-agendamentos')
 
-    // PASSO 2b: Navega até RECADOS — coordenadas confirmadas (y=475)
-    await navToSection(page, 475, 'RECADOS')
-    await page.waitForTimeout(4000)
+    // PASSO 2b: Navega até RECADOS — needsBack=true:
+    //   (24,23) na tela de AGENDAMENTOS é SETA DE VOLTAR (←), não hamburger.
+    //   Clicamos VOLTAR → home → abrimos hamburger → clicamos RECADOS (y=475)
+    await navToSection(page, 475, 'RECADOS', true)
+    await page.waitForTimeout(5000)
     await screenshot(page, '04-recados')
 
     // PASSO 2c: Boletim via contextPost (já funciona sem navegação)
+    // NOTA: o conteúdo completo dos recados (texto + URL de anexo) já está
+    // na resposta de recados.php — não é necessário navegar em cada item.
     const baseBody = { aluno: idAluno, curso: idCurso, id: userId, pessoa, conexao_valor: conexaoValor }
     const grades = await contextPost(context.request, 'boletim.php', baseBody, requestToken)
       .then(parseBoletimResponse)
       .catch(e => { console.error('[Scraper] ❌ boletim:', e); return [] as ScraperResult['grades'] })
 
-    // Parseia os dados capturados pela navegação
     const schedules = parseAgendamentosResponse(captured['agendamentos'] ?? {})
     const recados   = parseRecadosResponse(captured['recados'] ?? {})
 
@@ -182,12 +195,25 @@ export async function scrapeMasterEscola(login: string, password: string): Promi
   }
 }
 
-// Abre o menu hamburger e clica na coordenada y do item desejado
-async function navToSection(page: import('playwright').Page, itemY: number, name: string) {
+// Abre o menu hamburger e clica na coordenada y do item desejado.
+// needsBack=true: estamos numa sub-tela (ex: AGENDAMENTOS) — precisa voltar
+//   para o HOME antes de abrir o hamburger novamente.
+async function navToSection(
+  page: import('playwright').Page,
+  itemY: number,
+  name: string,
+  needsBack = false,
+) {
   console.log(`[Scraper] 🔍 Navegando para ${name} (y=${itemY})...`)
-  // Abre menu hamburger (canto superior esquerdo, coordenadas confirmadas)
+  if (needsBack) {
+    // Clica no botão VOLTAR (←) da sub-tela para retornar ao HOME
+    await flutterClick(page, 24, 23)
+    await page.waitForTimeout(2000)
+    console.log(`[Scraper] 🔙 Voltou para home`)
+  }
+  // Abre o hamburger no HOME
   await flutterClick(page, 24, 23)
-  await page.waitForTimeout(1200)
+  await page.waitForTimeout(1500)
   // Clica no item do menu
   await flutterClick(page, 200, itemY)
   console.log(`[Scraper] 🔍 ${name} clicado`)
@@ -306,7 +332,9 @@ function parseBoletimResponse(data: unknown): ScraperResult['grades'] {
   return items.map(parseGradeItem).filter(Boolean) as ScraperResult['grades']
 }
 
-function parseRecadosResponse(data: unknown): ScraperResult['recados'] {
+function parseRecadosResponse(
+  data: unknown,
+): ScraperResult['recados'] {
   const d = data as Record<string, unknown>
   console.log('[Scraper] recados keys:', Object.keys(d || {}).join(', '))
   const items: unknown[] = Array.isArray(d?.recados) ? d.recados as unknown[]
@@ -316,6 +344,7 @@ function parseRecadosResponse(data: unknown): ScraperResult['recados'] {
   console.log(`[Scraper] Itens de recado: ${items.length}`)
   if (items.length > 0) console.log('[Scraper] 1º recado:', JSON.stringify(items[0]).slice(0, 300))
   else console.log('[Scraper] Amostra recados:', JSON.stringify(d).slice(0, 400))
+
   return items.map(parseRecadoItem).filter(Boolean) as ScraperResult['recados']
 }
 // ──────────────────────────────────────────────────────────────────────────────
@@ -333,6 +362,11 @@ function parseAgendamentoItem(item: unknown): ScraperResult['schedules'][number]
     isoDate = `${y}-${m}-${d}`
   }
   if (!isoDate) return null
+
+  // ── Filtro de data: ignorar agendamentos anteriores a 10/05/2026 ─────────
+  const SCHED_CUTOFF = new Date('2026-05-10T00:00:00')
+  const agendDate = new Date(isoDate)
+  if (!isNaN(agendDate.getTime()) && agendDate < SCHED_CUTOFF) return null
 
   const rawType = String(i['tipo'] || i['type'] || i['tipo_agendamento'] || '').toUpperCase()
   const type: 'AVALIAÇÃO' | 'TRABALHO' | 'ATIVIDADE' =
@@ -362,6 +396,7 @@ function parseAgendamentoItem(item: unknown): ScraperResult['schedules'][number]
     description,
     discipline: String(i['disciplina'] || i['materia'] || i['nome_disciplina'] || '').trim().slice(0, 100),
     completed: Boolean(i['realizado'] || i['completed'] || i['concluido']),
+    completed_at: null,
   }
 }
 
@@ -385,18 +420,74 @@ function parseGradeItem(item: unknown): ScraperResult['grades'][number] | null {
   }
 }
 
+function stripHtml(raw: string): string {
+  return raw
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ').trim()
+}
+
 function parseRecadoItem(item: unknown): ScraperResult['recados'][number] | null {
   if (!item || typeof item !== 'object') return null
   const i = item as Record<string, unknown>
 
-  const content = String(i['mensagem'] || i['texto'] || i['content'] || i['descricao'] || '').trim()
+  // ── Filtro de data: ignorar recados anteriores a 10/05/2026 ──────────────
+  const CUTOFF = new Date('2026-05-10T00:00:00')
+  const rawDataField = String(i['data'] || i['data_envio'] || '').split(' às ')[0].trim()
+  if (rawDataField && rawDataField.includes('/')) {
+    const [dd, mm, yyyy] = rawDataField.split('/')
+    const recadoDate = new Date(`${yyyy}-${mm}-${dd}`)
+    if (!isNaN(recadoDate.getTime()) && recadoDate < CUTOFF) return null
+  }
+
+  const rawContent = String(i['mensagem'] || i['texto'] || i['content'] || i['descricao'] || i['corpo'] || '')
+  const content = stripHtml(rawContent).slice(0, 2000)
   if (!content || content.length < 2) return null
 
+  const title = i['titulo'] || i['assunto'] || i['subject'] || null
+
+  // Extrai URL de anexo: primeiro tenta campos dedicados,
+  // depois procura <a href='...'> dentro do HTML do texto
+  let attachment_url: string | null = String(
+    i['anexo'] || i['url_anexo'] || i['link_anexo'] || i['arquivo'] || ''
+  ).trim() || null
+
+  if (!attachment_url && rawContent.includes('href=')) {
+    const hrefMatch = rawContent.match(/href=['"]([^'"]+)['"]/) 
+    if (hrefMatch) attachment_url = hrefMatch[1]
+  }
+
+  if (attachment_url) {
+    console.log(`[Scraper] 📎 Recado com anexo: ${attachment_url.slice(0, 100)}`)
+  }
+
+  // ── external_key = ID do sistema legado ──────────────────────────────────
+  // Tenta todos os campos de ID conhecidos da API do Master Escola.
+  // Se nenhum estiver presente, usa hash do conteúdo como fallback.
+  const legacyId = i['id'] || i['codigo'] || i['id_recado'] || i['id_lido'] ||
+    i['idrecado'] || i['id_mensagem']
+  const external_key = legacyId
+    ? String(legacyId)
+    : `recado-${content.slice(0, 25).replace(/\W/g, '_')}`
+  console.log(`[Scraper] 🔑 Recado external_key="${external_key}" título="${String(title || '').slice(0, 40)}"`)
+
+  // ── sent_at_iso: extrai só a data (DD/MM/YYYY) e converte para ISO ────────
+  const sentRaw = String(i['data'] || i['data_envio'] || '').split(' às ')[0].trim()
+  let sent_at_iso: string | null = null
+  if (sentRaw.includes('/')) {
+    const [dd, mm, yyyy] = sentRaw.split('/')
+    if (dd && mm && yyyy) sent_at_iso = `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`
+  }
+
   return {
-    external_key: String(i['id'] || i['codigo'] || `recado-${content.slice(0, 15).replace(/\s/g, '')}`),
-    title: i['titulo'] ? String(i['titulo']) : null,
-    content: content.slice(0, 1000),
-    sender: i['remetente'] ? String(i['remetente']) : (i['autor'] ? String(i['autor']) : null),
-    sent_at: i['data'] ? String(i['data']) : (i['criado_em'] ? String(i['criado_em']) : null),
+    external_key,
+    title: title ? String(title).slice(0, 300) : null,
+    content,
+    attachment_url,
+    sender: String(i['remetente'] || i['autor'] || i['enviado_por'] || '').trim() || null,
+    sent_at: String(i['data'] || i['data_envio'] || i['criado_em'] || '').trim() || null,
+    sent_at_iso,
+    read: false,
+    read_at: null,
   }
 }

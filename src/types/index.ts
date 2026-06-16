@@ -59,8 +59,12 @@ export interface Recado {
   external_key: string | null
   title: string | null
   content: string
+  attachment_url: string | null
   sender: string | null
   sent_at: string | null
+  sent_at_iso: string | null   // data ISO para ordenação: "2026-05-12"
+  read: boolean
+  read_at: string | null
   first_seen_at: string
   created_at: string
 }
