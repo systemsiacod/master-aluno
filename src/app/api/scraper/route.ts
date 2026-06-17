@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase/server'
 import { scrapeMasterEscola } from '@/lib/scraper/masterEscola'
 import { processNewSchedules, processNewRecados, processGradeChanges } from '@/lib/alerts/engine'
+import { extractExamSchedulesFromAttachment } from '@/lib/cronogramas/provas'
 
 export async function POST(req: NextRequest) {
   const secret = req.headers.get('x-cron-secret')
@@ -70,13 +71,68 @@ export async function POST(req: NextRequest) {
       console.log(`[Scraper] 📢 Recados: ${scraped.recados.length} lidos do Master Escola | ${skippedRecados} já existiam | ${newRecados.length} novos inseridos`)
       if (newRecados.length > 0) await processNewRecados(student.id, newRecados)
 
-      // --- AUTO-AGENDAMENTOS a partir de RECADOS com datas ou cronogramas ---
+      // --- CRONOGRAMAS EM ANEXOS DE RECADOS ---
+      // Depois de inserir em ma_recados, abre cada anexo novo e verifica se é cronograma de provas.
+      // Se for, cria uma avaliação em ma_schedules para cada linha compatível com a série do aluno.
+      const recadosWithAttachments = scraped.recados
+        .filter(r => Boolean(r.external_key && r.attachment_url))
+        .map(r => ({
+          external_key: r.external_key!,
+          title: r.title,
+          content: r.content,
+          attachment_url: r.attachment_url!,
+        }))
+
+      const attachmentSchedules = []
+      for (const recado of recadosWithAttachments) {
+        try {
+          const examSchedules = await extractExamSchedulesFromAttachment({
+            attachmentUrl: recado.attachment_url,
+            studentGrade: student.grade,
+            recadoExternalKey: recado.external_key,
+            recadoTitle: recado.title,
+            recadoContent: recado.content,
+          })
+
+          if (examSchedules.length === 0) {
+            console.log(`[Scraper] 📎 Anexo sem cronograma aproveitável: ${recado.title || recado.external_key}`)
+          }
+
+          for (const schedule of examSchedules) {
+            const { data: existSched } = await db.from('ma_schedules')
+              .select('id').eq('student_id', student.id).eq('external_key', schedule.external_key).single()
+
+            if (existSched) continue
+
+            const { data: insertedSchedule, error: schedErr } = await db.from('ma_schedules').insert({
+              ...schedule,
+              student_id: student.id,
+            }).select().single()
+
+            if (schedErr) {
+              console.error(`[Scraper] ❌ Erro ao inserir avaliação do cronograma "${schedule.title}":`, schedErr.message)
+            } else if (insertedSchedule) {
+              attachmentSchedules.push(insertedSchedule)
+              console.log(`[Scraper] 📅 Avaliação do anexo: ${schedule.discipline} → ${schedule.date}`)
+            }
+          }
+        } catch (attachmentErr) {
+          console.error(`[Scraper] ❌ Erro ao analisar anexo do recado "${recado.title || recado.external_key}":`, attachmentErr)
+        }
+      }
+      if (attachmentSchedules.length > 0) {
+        await processNewSchedules(student.id, attachmentSchedules)
+        console.log(`[Scraper] ✨ ${attachmentSchedules.length} avaliações criadas a partir de anexos`)
+      }
+
+      // --- AUTO-AGENDAMENTOS a partir de RECADOS com datas no texto ---
       // Regra A: recado com keyword + datas no texto → cria entrada por data
-      // Regra B: recado com "cronograma" + sem datas → cria 1 entrada placeholder para lembrar de verificar
       let autoScheduleCount = 0
+      const newAutoSchedules = []
       const SCHED_KEYWORDS = /cronograma|prova|avalia|simulado|trabalho|entrega|prazo|apresenta|bimestral|reapresenta/i
 
       for (const r of scraped.recados) {
+        if (!r.external_key) continue
         const text = [r.title, r.content].filter(Boolean).join(' ')
         if (!SCHED_KEYWORDS.test(text)) continue
 
@@ -101,7 +157,7 @@ export async function POST(req: NextRequest) {
               .select('id').eq('student_id', student.id).eq('external_key', extKey).single()
 
             if (!existSched) {
-              const { error: schedErr } = await db.from('ma_schedules').insert({
+              const { data: insertedAuto, error: schedErr } = await db.from('ma_schedules').insert({
                 student_id: student.id,
                 external_key: extKey,
                 date: isoDate,
@@ -111,43 +167,19 @@ export async function POST(req: NextRequest) {
                 discipline: '',
                 completed: false,
                 completed_at: null,
-              })
+              }).select().single()
               if (!schedErr) {
                 autoScheduleCount++
+                if (insertedAuto) newAutoSchedules.push(insertedAuto)
                 console.log(`[Scraper] 📅 Auto-agendamento (data encontrada): "${r.title || 'recado'}" → ${isoDate}`)
               }
-            }
-          }
-        } else if (/cronograma/i.test(text) && r.attachment_url) {
-          // Regra B: é um cronograma com anexo mas sem datas no texto
-          // Cria 1 entrada placeholder para lembrar de verificar o anexo
-          const extKey = `recado-cronograma-${r.external_key}`
-          const { data: existSched } = await db.from('ma_schedules')
-            .select('id').eq('student_id', student.id).eq('external_key', extKey).single()
-
-          if (!existSched) {
-            // Usa a data de envio do recado como referência
-            const refDate = r.sent_at_iso || new Date().toISOString().slice(0, 10)
-            const { error: schedErr } = await db.from('ma_schedules').insert({
-              student_id: student.id,
-              external_key: extKey,
-              date: refDate,
-              type: 'AVALIAÇÃO',
-              title: (r.title || 'Cronograma de Provas').slice(0, 200),
-              description: `📎 Verificar datas no anexo: ${r.attachment_url?.slice(0, 200) || ''}`,
-              discipline: '',
-              completed: false,
-              completed_at: null,
-            })
-            if (!schedErr) {
-              autoScheduleCount++
-              console.log(`[Scraper] 📅 Auto-agendamento (cronograma/anexo): "${r.title || 'recado'}" → verificar datas no anexo`)
             }
           }
         }
       }
       if (autoScheduleCount > 0)
         console.log(`[Scraper] ✨ ${autoScheduleCount} agendamentos criados automaticamente de recados`)
+      if (newAutoSchedules.length > 0) await processNewSchedules(student.id, newAutoSchedules)
 
       // --- NOTAS ---
       const changedGrades = []
@@ -171,7 +203,13 @@ export async function POST(req: NextRequest) {
       // Atualiza timestamp
       await db.from('ma_students').update({ last_scraped_at: new Date().toISOString() }).eq('id', student.id)
 
-      results.push({ student: student.name, success: true, newSchedules: newSchedules.length, newRecados: newRecados.length, changedGrades: changedGrades.length })
+      results.push({
+        student: student.name,
+        success: true,
+        newSchedules: newSchedules.length + attachmentSchedules.length + newAutoSchedules.length,
+        newRecados: newRecados.length,
+        changedGrades: changedGrades.length,
+      })
     } catch (err) {
       console.error(`[Scraper] Erro no aluno ${student.name}:`, err)
       results.push({ student: student.name, success: false, error: String(err) })
